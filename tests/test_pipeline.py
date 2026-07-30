@@ -5,6 +5,7 @@ from knowledge_db.config import access_allows_ai
 from knowledge_db.extract import (
     content_hash,
     detect_source_kind,
+    extract_file,
     extract_text,
     guess_material_type,
 )
@@ -43,9 +44,20 @@ def test_detect_source_kind(tmp_path):
 def test_guess_material_type():
     assert guess_material_type("https://x.com/a.pdf", "url") == config.Inbox.TYPE_PDF
     assert guess_material_type("https://x.com/a", "url") == config.Inbox.TYPE_WEB
+    assert guess_material_type("https://x.com/pic.png?w=1", "url") == config.Inbox.TYPE_IMAGE
     assert guess_material_type("/tmp/a.pdf", "file") == config.Inbox.TYPE_PDF
     assert guess_material_type("/tmp/a.png", "file") == config.Inbox.TYPE_IMAGE
     assert guess_material_type("메모", "text") == config.Inbox.TYPE_TEXT
+
+
+def test_extract_image_file_is_empty_text_with_byte_hash(tmp_path):
+    img = tmp_path / "shot.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n fake-image-bytes")
+    doc = extract_file(str(img))
+    assert doc.material_type == config.Inbox.TYPE_IMAGE
+    assert doc.text == ""              # OCR happens later in the vision call
+    assert doc.local_path == str(img)
+    assert len(doc.content_hash) == 64  # hashed from bytes, enables dedup
 
 
 def test_access_policy_blocks_sensitive():

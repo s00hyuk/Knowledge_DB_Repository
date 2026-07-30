@@ -16,8 +16,9 @@ Notion **Knowledge Inbox**를 중앙 허브로 삼아 큐를 소비합니다.
 1. **입력** — Notion `Knowledge Inbox`에 자료를 등록(웹 URL / PDF / 텍스트). `ingest` CLI로도 등록 가능.
 2. **큐잉 & 리스** — 워커가 `상태=대기` + `AI 처리 허용` 항목을 하나씩 집어
    `Worker ID`/`Lease Until`을 찍고 `처리중`으로 전환. 크래시 시 만료된 리스를 재확보.
-3. **extract** — `원문 URL`(웹/PDF), `원본 파일`, 또는 인라인 텍스트에서 본문·해시 추출.
+3. **extract** — `원문 URL`(웹/PDF/이미지), `원본 파일`, 또는 인라인 텍스트에서 본문·해시 추출.
 4. **classify** — OpenAI **Structured Outputs**(strict json_schema)로 요약·도메인·개념·엔터티·주장을 구조화.
+   **이미지 자료는 비전 모델로 OCR+분류를 한 번에** 수행합니다.
 5. **notion_store** — Concepts/Entities는 제목으로 **중복 제거 후 upsert**, Claims는 생성.
    Inbox↔자식 관계를 양방향으로 연결하고 원본 파일을 첨부.
 6. **규칙** — 종합 신뢰도 **0.8 이상**이면 Inbox `상태=완료`, 미만이면 `검토`.
@@ -80,6 +81,10 @@ knowledge-db ingest https://a.com ./b.pdf "메모"
 
 # 파이프로 텍스트 투입
 cat note.md | knowledge-db ingest --stdin --now
+
+# 이미지 자료 (비전 OCR)
+knowledge-db ingest ./whiteboard.png --now
+knowledge-db ingest https://example.com/diagram.jpg --now
 
 # 편의 옵션
 knowledge-db ingest ./report.pdf --topic 연구 --topic 업무   # 주제 태그
@@ -145,7 +150,10 @@ pytest          # 네트워크/API 없이 도는 순수 단위 테스트
 - **첨부**: 로컬 파일은 Notion File Upload API로 업로드, 웹 자료는 원문 URL을
   external 파일로 첨부합니다(20MB 초과/실패 시 안전하게 건너뜀).
 - **개인정보 보호**: `접근 등급=민감` 자료는 절대 외부 모델로 전송하지 않고 로컬 보관 +
-  `검토`로 라우팅합니다(`config.AI_BLOCKED_ACCESS`).
+  `검토`로 라우팅합니다(`config.AI_BLOCKED_ACCESS`). 이미지도 동일하게 적용됩니다.
+- **이미지 OCR**: `이미지` 자료는 별도 OCR 엔진 없이 OpenAI 비전 모델에 이미지를 직접
+  전달해 텍스트 판독과 분류를 한 번에 처리합니다(웹 이미지는 URL, 로컬은 base64).
+  ⚠️ `OPENAI_MODEL`은 비전 지원 모델이어야 합니다(기본 `gpt-4o` 가능).
 
 ## 배포 (메인 PC 상시 실행)
 

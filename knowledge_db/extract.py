@@ -7,6 +7,7 @@ single malformed source never crashes the worker loop.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import mimetypes
@@ -21,10 +22,23 @@ from .models import RawDocument
 USER_AGENT = "knowledge-db/1.0 (+https://github.com/s00hyuk/Knowledge_DB_Repository)"
 _REQUEST_TIMEOUT = 30
 _MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024  # 25 MB
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
 
 
 def content_hash(text: str) -> str:
     return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
+
+
+def _bytes_hash(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def image_data_url(path: str) -> str:
+    """Base64 ``data:`` URL for a local image, for the vision API."""
+    mime = mimetypes.guess_type(path)[0] or "image/png"
+    with open(path, "rb") as fh:
+        b64 = base64.b64encode(fh.read()).decode("ascii")
+    return f"data:{mime};base64,{b64}"
 
 
 def _looks_like_url(source: str) -> bool:
@@ -45,13 +59,17 @@ def detect_source_kind(source: str) -> str:
 def guess_material_type(source: str, kind: str | None = None) -> str:
     """Best-effort 자료 유형 for the Inbox before the model refines it."""
     kind = kind or detect_source_kind(source)
-    lowered = source.lower()
+    lowered = source.lower().split("?")[0]
     if kind == "url":
-        return Inbox.TYPE_PDF if lowered.endswith(".pdf") else Inbox.TYPE_WEB
+        if lowered.endswith(".pdf"):
+            return Inbox.TYPE_PDF
+        if lowered.endswith(IMAGE_EXTS):
+            return Inbox.TYPE_IMAGE
+        return Inbox.TYPE_WEB
     if kind == "file":
         if lowered.endswith(".pdf"):
             return Inbox.TYPE_PDF
-        if lowered.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
+        if lowered.endswith(IMAGE_EXTS):
             return Inbox.TYPE_IMAGE
         return Inbox.TYPE_DOC
     return Inbox.TYPE_TEXT
@@ -113,12 +131,25 @@ def extract_web(url: str) -> RawDocument:
 
     content_type = resp.headers.get("Content-Type", "").split(";")[0].strip().lower()
 
+    path_lower = urlparse(url).path.lower()
+
     # PDFs served over the web: download and route to the PDF extractor.
-    if content_type == "application/pdf" or url.lower().endswith(".pdf"):
+    if content_type == "application/pdf" or path_lower.endswith(".pdf"):
         data = _read_capped(resp)
         doc = extract_pdf_bytes(data, fallback_title=_title_from_url(url))
         doc.source_url = url
         return doc
+
+    # Images: hash the bytes now (for dedup); the classifier reads them via URL.
+    if content_type.startswith("image/") or path_lower.endswith(IMAGE_EXTS):
+        data = _read_capped(resp)
+        return RawDocument(
+            title=_title_from_url(url),
+            text="",
+            material_type=Inbox.TYPE_IMAGE,
+            source_url=url,
+            content_hash=_bytes_hash(data),
+        )
 
     html = resp.text
     title, text = _parse_html(html, url)
@@ -170,10 +201,26 @@ def _parse_html(html: str, url: str) -> tuple[str, str]:
 # --------------------------------------------------------------------------- #
 # Local files / raw text
 # --------------------------------------------------------------------------- #
+def extract_image_file(path: str) -> RawDocument:
+    """Image file -> empty-text RawDocument; the classifier does OCR via vision."""
+    with open(path, "rb") as fh:
+        data = fh.read()
+    return RawDocument(
+        title=os.path.splitext(os.path.basename(path))[0],
+        text="",
+        material_type=Inbox.TYPE_IMAGE,
+        local_path=path,
+        content_hash=_bytes_hash(data),
+    )
+
+
 def extract_file(path: str) -> RawDocument:
     mime, _ = mimetypes.guess_type(path)
-    if (mime == "application/pdf") or path.lower().endswith(".pdf"):
+    lowered = path.lower()
+    if (mime == "application/pdf") or lowered.endswith(".pdf"):
         return extract_pdf_file(path)
+    if (mime or "").startswith("image/") or lowered.endswith(IMAGE_EXTS):
+        return extract_image_file(path)
 
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
         text = fh.read()
