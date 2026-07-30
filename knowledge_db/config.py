@@ -72,6 +72,21 @@ class Settings:
         default_factory=lambda: _get("NOTION_CLAIMS_DB", "3e54f8ff-cebe-45e4-a5ed-90c0ca990c4e")
     )
 
+    # Data source IDs (Notion 2025-09-03 data-sources API). Newer notion-client
+    # queries data sources, not databases; these are the discovered collections.
+    inbox_ds: str = field(
+        default_factory=lambda: _get("NOTION_INBOX_DS", "2007c496-1c20-4833-81de-f7b242ef0ea3")
+    )
+    concepts_ds: str = field(
+        default_factory=lambda: _get("NOTION_CONCEPTS_DS", "aaacf560-edf5-46ca-b607-1438b4ccab2f")
+    )
+    entities_ds: str = field(
+        default_factory=lambda: _get("NOTION_ENTITIES_DS", "4de470f7-f6a2-4ac7-aff2-578ece8ee706")
+    )
+    claims_ds: str = field(
+        default_factory=lambda: _get("NOTION_CLAIMS_DS", "73a451c6-890b-4984-b2b7-a858d8a11c3e")
+    )
+
     confidence_threshold: float = field(default_factory=lambda: _get_float("CONFIDENCE_THRESHOLD", 0.8))
     worker_id: str = field(default_factory=lambda: _get("WORKER_ID", "main-pc"))
     lease_seconds: int = field(default_factory=lambda: _get_int("LEASE_SECONDS", 900))

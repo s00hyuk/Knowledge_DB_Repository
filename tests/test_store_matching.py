@@ -82,3 +82,38 @@ def test_no_match_returns_none():
     page_id, via = store._match_page("db", Concepts.TITLE, Concepts.ALIASES, "신규개념", ["별칭1"])
     assert page_id is None
     assert via is None
+
+
+def test_query_uses_data_sources_when_available():
+    seen = {}
+
+    class _DS:
+        def query(self, data_source_id, **kw):
+            seen["ds"] = data_source_id
+            return {"results": []}
+
+    class _Client:
+        data_sources = _DS()
+
+    store = NotionStore.__new__(NotionStore)
+    store.client = _Client()
+    store._ds = {"db1": "ds1"}
+    store._query("db1", filter={})
+    assert seen["ds"] == "ds1"  # routed to the new data-sources API
+
+
+def test_query_falls_back_to_databases_without_data_sources():
+    seen = {}
+
+    class _DBs:
+        def query(self, **kw):
+            seen["db"] = kw.get("database_id")
+            return {"results": []}
+
+    class _Client:
+        databases = _DBs()  # no data_sources attribute -> legacy path
+
+    store = NotionStore.__new__(NotionStore)
+    store.client = _Client()
+    store._query("db1", filter={})
+    assert seen["db"] == "db1"

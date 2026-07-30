@@ -79,6 +79,23 @@ class NotionStore:
     def __init__(self) -> None:
         self.token = settings.require_notion()
         self.client = Client(auth=self.token)
+        # database_id -> data_source_id, for the newer data-sources query API.
+        self._ds = {
+            settings.inbox_db: settings.inbox_ds,
+            settings.concepts_db: settings.concepts_ds,
+            settings.entities_db: settings.entities_ds,
+            settings.claims_db: settings.claims_ds,
+        }
+
+    def _query(self, db_id: str, **kwargs):
+        """Query a table, compatible with both notion-client generations.
+
+        Newer notion-client (Notion 2025-09-03) dropped ``databases.query`` in
+        favor of ``data_sources.query``; older versions only have the former.
+        """
+        if hasattr(self.client, "data_sources"):
+            return self.client.data_sources.query(self._ds[db_id], **kwargs)
+        return self.client.databases.query(database_id=db_id, **kwargs)
 
     # ----------------------------------------------------------------- queue
     def claim_next(self) -> dict | None:
@@ -122,10 +139,10 @@ class NotionStore:
         return self._inbox_view(page)
 
     def _query_first(self, filter: dict, sorts: list | None = None) -> dict | None:
-        kwargs = {"database_id": settings.inbox_db, "filter": filter, "page_size": 1}
+        kwargs: dict = {"filter": filter, "page_size": 1}
         if sorts:
             kwargs["sorts"] = sorts
-        result = self.client.databases.query(**kwargs)
+        result = self._query(settings.inbox_db, **kwargs)
         results = result.get("results", [])
         return results[0] if results else None
 
@@ -209,8 +226,8 @@ class NotionStore:
         """
         if not content_hash:
             return None
-        result = self.client.databases.query(
-            database_id=settings.inbox_db,
+        result = self._query(
+            settings.inbox_db,
             filter={"property": Inbox.HASH, "rich_text": {"equals": content_hash}},
             page_size=5,
         )
@@ -265,8 +282,8 @@ class NotionStore:
 
     # --------------------------------------------------------------- upsert
     def _query_title_equals(self, database_id: str, title_prop: str, value: str) -> str | None:
-        result = self.client.databases.query(
-            database_id=database_id,
+        result = self._query(
+            database_id,
             filter={"property": title_prop, "title": {"equals": value}},
             page_size=1,
         )
@@ -274,8 +291,8 @@ class NotionStore:
         return results[0]["id"] if results else None
 
     def _query_alias_contains(self, database_id: str, alias_prop: str, value: str) -> str | None:
-        result = self.client.databases.query(
-            database_id=database_id,
+        result = self._query(
+            database_id,
             filter={"property": alias_prop, "multi_select": {"contains": value}},
             page_size=1,
         )
