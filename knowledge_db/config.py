@@ -159,6 +159,7 @@ class Entities:
 
     TYPE_OPTIONS = ["인물", "조직", "기술", "제품", "장소", "기타"]
     RV_PROPOSED = "제안"
+    RV_MERGE = "병합 후보"
 
 
 class Claims:

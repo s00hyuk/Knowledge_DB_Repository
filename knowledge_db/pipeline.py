@@ -63,6 +63,16 @@ def process_doc(
     original_title: str | None = None,
 ) -> Outcome:
     """Classify an already-extracted document and store the full result."""
+    # 1b. Dedup: if identical content was already processed, skip AI and route
+    # the new row to 검토 with a pointer to the original.
+    duplicate = store.find_duplicate(doc.content_hash, inbox_id)
+    if duplicate:
+        log.info(
+            "Duplicate of %s (%s) — skipping AI.", duplicate.get("title"), duplicate.get("url")
+        )
+        status = store.finalize_duplicate(inbox_id, doc.content_hash, duplicate)
+        return Outcome(inbox_id, status, 0.0, 0, 0, 0, doc.title)
+
     # 2. Classify with Structured Outputs.
     result: Classification = classify(doc)
 

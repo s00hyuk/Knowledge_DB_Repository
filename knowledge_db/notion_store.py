@@ -200,6 +200,49 @@ class NotionStore:
         )
         return Inbox.ST_REVIEW
 
+    # ------------------------------------------------------------- dedup
+    def find_duplicate(self, content_hash: str, exclude_id: str) -> dict | None:
+        """Return an already-processed Inbox item sharing this content hash.
+
+        Only processed items carry a 콘텐츠 해시, so a hash match inherently
+        means the content was ingested before (not another pending row).
+        """
+        if not content_hash:
+            return None
+        result = self.client.databases.query(
+            database_id=settings.inbox_db,
+            filter={"property": Inbox.HASH, "rich_text": {"equals": content_hash}},
+            page_size=5,
+        )
+        for page in result.get("results", []):
+            if page["id"] == exclude_id:
+                continue
+            props = page["properties"]
+            return {
+                "id": page["id"],
+                "url": page.get("url"),
+                "title": _plain(props.get(Inbox.TITLE)),
+                "status": ((props.get(Inbox.STATUS) or {}).get("select") or {}).get("name"),
+            }
+        return None
+
+    def finalize_duplicate(self, inbox_id: str, content_hash: str, original: dict) -> str:
+        """Route a duplicate to 검토 without AI, noting the original item."""
+        ref = " ".join(x for x in (original.get("title"), original.get("url")) if x)
+        note = f"중복 자료 — 원본: {ref}".strip()
+        self.client.pages.update(
+            page_id=inbox_id,
+            properties={
+                Inbox.STATUS: _select(Inbox.ST_REVIEW),
+                Inbox.HASH: _rich_text(content_hash),
+                Inbox.ERROR: _rich_text(note[:1900]),
+                Inbox.VERSION: _rich_text(PROCESSING_VERSION),
+                Inbox.WORKER_ID: {"rich_text": []},
+                Inbox.LEASE_UNTIL: {"date": None},
+            },
+        )
+        return Inbox.ST_REVIEW
+
     def mark_failed(self, inbox_id: str, error: str, retries: int) -> str:
         """Bump retry count; back to 대기 if retries remain, else 실패."""
         next_retries = retries + 1
@@ -221,20 +264,79 @@ class NotionStore:
         return bool((page["properties"].get(Inbox.FILE) or {}).get("files"))
 
     # --------------------------------------------------------------- upsert
-    def _find_by_title(self, database_id: str, title_prop: str, name: str) -> str | None:
+    def _query_title_equals(self, database_id: str, title_prop: str, value: str) -> str | None:
         result = self.client.databases.query(
             database_id=database_id,
-            filter={"property": title_prop, "title": {"equals": name}},
+            filter={"property": title_prop, "title": {"equals": value}},
             page_size=1,
         )
         results = result.get("results", [])
         return results[0]["id"] if results else None
 
+    def _query_alias_contains(self, database_id: str, alias_prop: str, value: str) -> str | None:
+        result = self.client.databases.query(
+            database_id=database_id,
+            filter={"property": alias_prop, "multi_select": {"contains": value}},
+            page_size=1,
+        )
+        results = result.get("results", [])
+        return results[0]["id"] if results else None
+
+    def _match_page(
+        self, database_id: str, title_prop: str, alias_prop: str, name: str, aliases: list[str]
+    ) -> tuple[str | None, str | None]:
+        """Find an existing page for a concept/entity via bounded queries.
+
+        Returns ``(page_id, via)`` where ``via`` is ``"title"`` (exact name
+        match, a confident reuse) or ``"alias"`` (matched through an alias — a
+        likely-but-uncertain duplicate, so the caller flags it 병합 후보).
+        Order: exact title -> existing 별칭 contains name -> each new alias vs.
+        existing titles/별칭.
+        """
+        exact = self._query_title_equals(database_id, title_prop, name)
+        if exact:
+            return exact, "title"
+        hit = self._query_alias_contains(database_id, alias_prop, name)
+        if hit:
+            return hit, "alias"
+        for alias in list(aliases)[:5]:
+            if not alias:
+                continue
+            hit = self._query_title_equals(database_id, title_prop, alias)
+            if hit:
+                return hit, "alias"
+            hit = self._query_alias_contains(database_id, alias_prop, alias)
+            if hit:
+                return hit, "alias"
+        return None, None
+
+    def _mark_merge_candidate(
+        self, page_id: str, review_prop: str, merge_value: str, alias_prop: str, add_alias: str
+    ) -> None:
+        """Flag a reused page as 병합 후보 and record the new surface form as an alias."""
+        props: dict = {review_prop: _select(merge_value)}
+        try:
+            page = self.client.pages.retrieve(page_id=page_id)
+            current = [
+                o["name"] for o in (page["properties"].get(alias_prop) or {}).get("multi_select", [])
+            ]
+            if add_alias and add_alias not in current:
+                props[alias_prop] = _multi_select(current + [add_alias])
+        except Exception as exc:  # noqa: BLE001 - still set the review flag
+            log.warning("Could not read aliases for %s: %s", page_id, exc)
+        self.client.pages.update(page_id=page_id, properties=props)
+
     def upsert_concept(self, concept, domain: str, inbox_id: str) -> str:
-        existing = self._find_by_title(settings.concepts_db, Concepts.TITLE, concept.name)
-        if existing:
-            self._link_child_to_inbox(existing, Concepts.REL_INBOX, inbox_id)
-            return existing
+        match_id, via = self._match_page(
+            settings.concepts_db, Concepts.TITLE, Concepts.ALIASES, concept.name, concept.aliases
+        )
+        if match_id:
+            self._link_child_to_inbox(match_id, Concepts.REL_INBOX, inbox_id)
+            if via == "alias":
+                self._mark_merge_candidate(
+                    match_id, Concepts.REVIEW, Concepts.RV_MERGE, Concepts.ALIASES, concept.name
+                )
+            return match_id
         page = self.client.pages.create(
             parent={"database_id": settings.concepts_db},
             properties={
@@ -249,10 +351,16 @@ class NotionStore:
         return page["id"]
 
     def upsert_entity(self, entity, inbox_id: str) -> str:
-        existing = self._find_by_title(settings.entities_db, Entities.TITLE, entity.name)
-        if existing:
-            self._link_child_to_inbox(existing, Entities.REL_INBOX, inbox_id)
-            return existing
+        match_id, via = self._match_page(
+            settings.entities_db, Entities.TITLE, Entities.ALIASES, entity.name, entity.aliases
+        )
+        if match_id:
+            self._link_child_to_inbox(match_id, Entities.REL_INBOX, inbox_id)
+            if via == "alias":
+                self._mark_merge_candidate(
+                    match_id, Entities.REVIEW, Entities.RV_MERGE, Entities.ALIASES, entity.name
+                )
+            return match_id
         props = {
             Entities.TITLE: _title(entity.name),
             Entities.TYPE: _select(entity.type),
