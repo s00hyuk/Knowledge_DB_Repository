@@ -1,0 +1,25 @@
+[Unit]
+# Knowledge DB worker — single main-PC processor for the Notion Inbox queue.
+# Install as a user service:
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/systemd/knowledge-db.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now knowledge-db
+#   journalctl --user -u knowledge-db -f      # live logs
+# Adjust WorkingDirectory / ExecStart paths if the repo or venv live elsewhere.
+Description=Knowledge DB worker (Notion Personal Knowledge OS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Knowledge_DB_Repository
+EnvironmentFile=%h/Knowledge_DB_Repository/.env
+ExecStart=%h/Knowledge_DB_Repository/.venv/bin/knowledge-db run
+Restart=on-failure
+RestartSec=10
+# Keep going across logout/reboot for a headless always-on PC.
+# (Run `loginctl enable-linger $USER` once so the user service starts at boot.)
+
+[Install]
+WantedBy=default.target
