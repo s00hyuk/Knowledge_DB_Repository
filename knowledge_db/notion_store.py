@@ -142,6 +142,7 @@ class NotionStore:
             "title": _plain(props.get(Inbox.TITLE)),
             "summary_text": _plain(props.get(Inbox.SUMMARY)),
             "source_url": (props.get(Inbox.SOURCE_URL) or {}).get("url"),
+            "access": ((props.get(Inbox.ACCESS) or {}).get("select") or {}).get("name"),
             "files": (props.get(Inbox.FILE) or {}).get("files", []),
             "retries": int(num(Inbox.RETRIES) or 0),
         }
@@ -155,6 +156,7 @@ class NotionStore:
         concept_ids: list[str],
         entity_ids: list[str],
         claim_ids: list[str],
+        set_title: str | None = None,
     ) -> str:
         status = (
             Inbox.ST_DONE
@@ -175,11 +177,28 @@ class NotionStore:
             Inbox.REL_ENTITIES: _relation(entity_ids),
             Inbox.REL_CLAIMS: _relation(claim_ids),
         }
+        # Auto-title: only when the row had no meaningful title (empty or the URL).
+        if set_title:
+            props[Inbox.TITLE] = _title(set_title)
         if doc.source_url and not self._has_files(inbox_id):
             props[Inbox.SOURCE_URL] = {"url": doc.source_url}
 
         self.client.pages.update(page_id=inbox_id, properties=props)
         return status
+
+    def route_to_review(self, inbox_id: str, note: str) -> str:
+        """Clear the lease and route an item to 검토 without AI (e.g. 민감 자료)."""
+        self.client.pages.update(
+            page_id=inbox_id,
+            properties={
+                Inbox.STATUS: _select(Inbox.ST_REVIEW),
+                Inbox.ERROR: _rich_text(note[:1900]),
+                Inbox.VERSION: _rich_text(PROCESSING_VERSION),
+                Inbox.WORKER_ID: {"rich_text": []},
+                Inbox.LEASE_UNTIL: {"date": None},
+            },
+        )
+        return Inbox.ST_REVIEW
 
     def mark_failed(self, inbox_id: str, error: str, retries: int) -> str:
         """Bump retry count; back to 대기 if retries remain, else 실패."""
@@ -339,7 +358,10 @@ class NotionStore:
         title: str,
         source_url: str | None = None,
         inline_text: str | None = None,
+        local_path: str | None = None,
         material_type: str | None = None,
+        access: str | None = None,
+        topics: list[str] | None = None,
         ai_allowed: bool = True,
     ) -> dict:
         props: dict = {
@@ -354,7 +376,25 @@ class NotionStore:
             props[Inbox.SUMMARY] = _rich_text(inline_text[:1900])
         if material_type:
             props[Inbox.MATERIAL_TYPE] = _select(material_type)
+        if access:
+            props[Inbox.ACCESS] = _select(access)
+        if topics:
+            props[Inbox.TOPICS] = _multi_select(list(topics))
         page = self.client.pages.create(
             parent={"database_id": settings.inbox_db}, properties=props
         )
-        return {"id": page["id"], "url": page.get("url")}
+        created = {"id": page["id"], "url": page.get("url")}
+
+        # Preserve the original immediately at ingest, before any processing.
+        if local_path or source_url:
+            self.attach_original(
+                created["id"],
+                RawDocument(
+                    title=title,
+                    text="",
+                    material_type=material_type or Inbox.TYPE_DOC,
+                    source_url=source_url,
+                    local_path=local_path,
+                ),
+            )
+        return created

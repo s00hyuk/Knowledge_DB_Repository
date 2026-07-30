@@ -20,8 +20,8 @@ import signal
 import sys
 import time
 
-from .config import Inbox, settings
-from .extract import extract
+from .config import Inbox, access_allows_ai, settings
+from .extract import detect_source_kind, extract, guess_material_type
 from .notion_store import NotionStore
 from .pipeline import process_doc, process_item
 
@@ -87,53 +87,84 @@ def cmd_run(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------- #
 # ingest
 # --------------------------------------------------------------------------- #
+def _collect_sources(args: argparse.Namespace) -> list[tuple[str, str]]:
+    """Gather (kind, value) pairs from positionals, flags, and stdin."""
+    items: list[tuple[str, str]] = []
+    for src in args.sources or []:
+        items.append((detect_source_kind(src), src))
+    if args.url:
+        items.append(("url", args.url))
+    if args.file:
+        items.append(("file", args.file))
+    if args.text:
+        items.append(("text", args.text))
+    if args.stdin:
+        piped = sys.stdin.read().strip()
+        if piped:
+            items.append(("text", piped))
+    return items
+
+
 def cmd_ingest(args: argparse.Namespace) -> int:
     store = NotionStore()
-    given = [x for x in (args.url, args.file, args.text) if x]
-    if len(given) != 1:
-        log.error("Provide exactly one of --url / --file / --text.")
+    items = _collect_sources(args)
+    if not items:
+        log.error("Nothing to ingest. Pass a URL/file/text, e.g. `ingest https://…` or `--stdin`.")
         return 2
+    if args.title and len(items) > 1:
+        log.warning("--title is ignored when ingesting multiple sources.")
 
-    if args.url:
-        created = store.create_inbox_item(
-            title=args.title or args.url,
-            source_url=args.url,
-            ai_allowed=not args.no_ai,
-        )
-    elif args.file:
-        if not os.path.isfile(args.file):
-            log.error("File not found: %s", args.file)
-            return 2
-        created = store.create_inbox_item(
-            title=args.title or os.path.basename(args.file),
-            material_type=Inbox.TYPE_PDF if args.file.lower().endswith(".pdf") else Inbox.TYPE_DOC,
-            ai_allowed=not args.no_ai,
-        )
-    else:  # text
-        created = store.create_inbox_item(
-            title=args.title or args.text[:80],
-            inline_text=args.text,
-            material_type=Inbox.TYPE_TEXT,
-            ai_allowed=not args.no_ai,
-        )
+    # 접근 등급이 민감이면 AI 처리를 강제로 끈다.
+    access = args.access
+    ai_allowed = (not args.no_ai) and access_allows_ai(access)
+    if args.no_ai is False and not access_allows_ai(access):
+        log.info("접근 등급 '%s' — AI 처리 자동 비활성화.", access)
 
-    log.info("Queued Inbox item: %s", created.get("url") or created["id"])
+    processed_any = False
+    for kind, value in items:
+        if kind == "file" and not os.path.isfile(value):
+            log.error("File not found, skipping: %s", value)
+            continue
 
-    if args.now:
-        if args.no_ai:
-            log.warning("--now ignored because --no-ai was set.")
-            return 0
-        source = args.url or args.file or args.text
-        doc = extract(source)
-        outcome = process_doc(store, created["id"], doc)
-        log.info(
-            "Processed now: 상태=%s 신뢰도=%.2f (개념 %d / 엔터티 %d / 주장 %d)",
-            outcome.status,
-            outcome.confidence,
-            outcome.n_concepts,
-            outcome.n_entities,
-            outcome.n_claims,
+        material_type = args.type or guess_material_type(value, kind)
+        title = args.title if (args.title and len(items) == 1) else None
+        if not title:
+            if kind == "url":
+                title = value
+            elif kind == "file":
+                title = os.path.basename(value)
+            else:
+                title = value[:80]
+
+        created = store.create_inbox_item(
+            title=title,
+            source_url=value if kind == "url" else None,
+            inline_text=value if kind == "text" else None,
+            local_path=value if kind == "file" else None,
+            material_type=material_type,
+            access=access,
+            topics=args.topic,
+            ai_allowed=ai_allowed,
         )
+        log.info("Queued [%s] %s -> %s", kind, title[:60], created.get("url") or created["id"])
+
+        if args.now and ai_allowed:
+            doc = extract(value)
+            outcome = process_doc(store, created["id"], doc, original_title=title)
+            processed_any = True
+            log.info(
+                "  처리완료: 상태=%s 신뢰도=%.2f (개념 %d / 엔터티 %d / 주장 %d)",
+                outcome.status,
+                outcome.confidence,
+                outcome.n_concepts,
+                outcome.n_entities,
+                outcome.n_claims,
+            )
+
+    if args.now and not ai_allowed:
+        log.warning("--now skipped: AI 처리가 비활성화되어 있습니다 (--no-ai 또는 민감 등급).")
+    if args.now and not processed_any and ai_allowed:
+        log.info("처리할 항목이 없었습니다.")
     return 0
 
 
@@ -152,13 +183,40 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--once", action="store_true", help="drain the queue once then exit")
     run_p.set_defaults(func=cmd_run)
 
-    ing_p = sub.add_parser("ingest", help="add a new item to the Inbox")
-    ing_p.add_argument("--url", help="web page or PDF URL")
-    ing_p.add_argument("--file", help="local file path (PDF/text/doc)")
-    ing_p.add_argument("--text", help="raw text note")
-    ing_p.add_argument("--title", help="override the Inbox 제목")
-    ing_p.add_argument("--now", action="store_true", help="process immediately after queuing")
-    ing_p.add_argument("--no-ai", action="store_true", help="queue with AI 처리 허용 off")
+    ing_p = sub.add_parser(
+        "ingest",
+        help="add one or more items to the Inbox",
+        description="원본을 위치 인자로 넘기면 URL/파일/텍스트를 자동 감지합니다. 여러 개 동시 등록 가능.",
+    )
+    ing_p.add_argument(
+        "sources",
+        nargs="*",
+        help="URL / 파일 경로 / 텍스트 (자동 감지, 여러 개 가능)",
+    )
+    ing_p.add_argument("--url", help="명시적 웹/ PDF URL")
+    ing_p.add_argument("--file", help="명시적 로컬 파일 경로")
+    ing_p.add_argument("--text", help="명시적 텍스트 메모")
+    ing_p.add_argument("--stdin", action="store_true", help="표준입력(파이프)에서 텍스트 읽기")
+    ing_p.add_argument("--title", help="Inbox 제목 지정(단일 항목일 때만)")
+    ing_p.add_argument(
+        "--type",
+        choices=Inbox.MATERIAL_TYPES,
+        help="자료 유형 강제 지정(기본: 자동 추정)",
+    )
+    ing_p.add_argument(
+        "--access",
+        choices=Inbox.ACCESS_OPTIONS,
+        default="일반",
+        help="접근 등급(기본 일반). '민감'은 AI 처리에서 제외됩니다.",
+    )
+    ing_p.add_argument(
+        "--topic",
+        action="append",
+        choices=Inbox.TOPIC_OPTIONS,
+        help="주제 태그(복수 지정 가능)",
+    )
+    ing_p.add_argument("--now", action="store_true", help="등록 후 즉시 처리")
+    ing_p.add_argument("--no-ai", action="store_true", help="AI 처리 허용 끄고 보관만")
     ing_p.set_defaults(func=cmd_ingest)
     return parser
 

@@ -62,13 +62,38 @@ python -m knowledge_db run          # 동일
 
 # 큐를 한 번만 비우고 종료
 knowledge-db run --once
-
-# 자료 등록
-knowledge-db ingest --url https://example.com/article
-knowledge-db ingest --file ./paper.pdf --now      # 등록 후 즉시 처리
-knowledge-db ingest --text "정리해둘 메모…"
-knowledge-db ingest --url https://… --no-ai        # AI 처리 없이 보관만
 ```
+
+### 자료 등록 (ingest)
+
+원본을 **위치 인자로 그냥 넘기면 URL/파일/텍스트를 자동 감지**합니다. 여러 개를
+한 번에, 파이프(stdin)로도 등록할 수 있습니다.
+
+```bash
+# 자동 감지 — 형식을 지정할 필요 없음
+knowledge-db ingest https://example.com/article
+knowledge-db ingest ./paper.pdf --now                 # 등록 후 즉시 처리
+knowledge-db ingest "정리해둘 메모…"
+
+# 여러 개 한 번에 (URL·파일·텍스트 섞어도 됨)
+knowledge-db ingest https://a.com ./b.pdf "메모"
+
+# 파이프로 텍스트 투입
+cat note.md | knowledge-db ingest --stdin --now
+
+# 편의 옵션
+knowledge-db ingest ./report.pdf --topic 연구 --topic 업무   # 주제 태그
+knowledge-db ingest ./secret.pdf --access 민감              # AI 처리 자동 제외
+knowledge-db ingest https://… --type 논문 --title "제목 지정"
+knowledge-db ingest https://… --no-ai                       # 보관만
+```
+
+편의 기능:
+- **자동 감지**: `--url/--file/--text`를 몰라도 원본만 넘기면 됨(명시 플래그도 계속 지원).
+- **즉시 첨부**: 로컬 파일/URL은 등록 시점에 `원본 파일`로 바로 첨부(처리 전에도 원본 보존).
+- **자동 제목**: 제목을 안 주면 처리 후 분류 결과 제목으로 `제목`을 자동 보정.
+- **접근 등급 연동**: `--access 민감`이면 `AI 처리 허용`이 자동으로 꺼지고, 워커도 민감
+  자료는 외부 모델로 보내지 않고 `검토`로 라우팅합니다(개인정보 보호).
 
 ## 설정 (환경변수)
 
@@ -114,3 +139,9 @@ pytest          # 네트워크/API 없이 도는 순수 단위 테스트
 - **관계형 전용**: 별도 로컬 DB 없이 Notion relation만으로 지식 그래프를 구성합니다.
 - **첨부**: 로컬 파일은 Notion File Upload API로 업로드, 웹 자료는 원문 URL을
   external 파일로 첨부합니다(20MB 초과/실패 시 안전하게 건너뜀).
+- **개인정보 보호**: `접근 등급=민감` 자료는 절대 외부 모델로 전송하지 않고 로컬 보관 +
+  `검토`로 라우팅합니다(`config.AI_BLOCKED_ACCESS`).
+
+## 배포 (메인 PC 상시 실행)
+
+systemd 유저 서비스 / cron / macOS·Windows 설정은 [`deploy/README.md`](deploy/README.md) 참고.

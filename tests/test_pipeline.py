@@ -1,7 +1,13 @@
 """Lightweight unit tests that do not touch Notion or OpenAI."""
 
 from knowledge_db import config
-from knowledge_db.extract import content_hash, extract_text
+from knowledge_db.config import access_allows_ai
+from knowledge_db.extract import (
+    content_hash,
+    detect_source_kind,
+    extract_text,
+    guess_material_type,
+)
 from knowledge_db.models import Classification, ConceptOut
 
 
@@ -23,6 +29,30 @@ def test_domains_match_schema_and_model_enum():
     # The classifier enum must stay in lockstep with the config domains.
     domain_enum = Classification.model_json_schema()["properties"]["domain"]["enum"]
     assert set(domain_enum) == set(config.DOMAINS)
+
+
+def test_detect_source_kind(tmp_path):
+    assert detect_source_kind("https://example.com/a") == "url"
+    assert detect_source_kind("http://x.io") == "url"
+    f = tmp_path / "note.txt"
+    f.write_text("hi", encoding="utf-8")
+    assert detect_source_kind(str(f)) == "file"
+    assert detect_source_kind("그냥 텍스트 메모") == "text"
+
+
+def test_guess_material_type():
+    assert guess_material_type("https://x.com/a.pdf", "url") == config.Inbox.TYPE_PDF
+    assert guess_material_type("https://x.com/a", "url") == config.Inbox.TYPE_WEB
+    assert guess_material_type("/tmp/a.pdf", "file") == config.Inbox.TYPE_PDF
+    assert guess_material_type("/tmp/a.png", "file") == config.Inbox.TYPE_IMAGE
+    assert guess_material_type("메모", "text") == config.Inbox.TYPE_TEXT
+
+
+def test_access_policy_blocks_sensitive():
+    assert access_allows_ai("일반") is True
+    assert access_allows_ai("개인") is True
+    assert access_allows_ai(None) is True
+    assert access_allows_ai("민감") is False
 
 
 def test_classification_roundtrip():

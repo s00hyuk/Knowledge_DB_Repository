@@ -32,6 +32,31 @@ def _looks_like_url(source: str) -> bool:
     return parsed.scheme in ("http", "https") and bool(parsed.netloc)
 
 
+def detect_source_kind(source: str) -> str:
+    """Classify a raw ingest argument as 'url', 'file', or 'text'."""
+    source = source.strip()
+    if _looks_like_url(source):
+        return "url"
+    if os.path.exists(source) and os.path.isfile(source):
+        return "file"
+    return "text"
+
+
+def guess_material_type(source: str, kind: str | None = None) -> str:
+    """Best-effort 자료 유형 for the Inbox before the model refines it."""
+    kind = kind or detect_source_kind(source)
+    lowered = source.lower()
+    if kind == "url":
+        return Inbox.TYPE_PDF if lowered.endswith(".pdf") else Inbox.TYPE_WEB
+    if kind == "file":
+        if lowered.endswith(".pdf"):
+            return Inbox.TYPE_PDF
+        if lowered.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
+            return Inbox.TYPE_IMAGE
+        return Inbox.TYPE_DOC
+    return Inbox.TYPE_TEXT
+
+
 def _title_from_url(url: str) -> str:
     path = urlparse(url).path.rstrip("/")
     tail = os.path.basename(path) or urlparse(url).netloc

@@ -22,6 +22,15 @@ PROCESSING_VERSION = "1.0"
 # The three fixed knowledge domains, applied to Concepts.분야.
 DOMAINS = ["AI·기술", "인문예술", "사회경제"]
 
+# Access grades whose content must never be sent to an external model.
+# 민감 자료는 AI 처리에서 제외한다(로컬에만 보관, 검토로 라우팅).
+AI_BLOCKED_ACCESS = {"민감"}
+
+
+def access_allows_ai(access: str | None) -> bool:
+    """Whether an item with this 접근 등급 may be sent to the classifier."""
+    return (access or "일반") not in AI_BLOCKED_ACCESS
+
 
 def _get(name: str, default: str | None = None) -> str | None:
     value = os.getenv(name)
