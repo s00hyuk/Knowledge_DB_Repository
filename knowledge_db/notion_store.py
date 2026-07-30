@@ -105,21 +105,22 @@ class NotionStore:
         has expired (crash recovery). The claim stamps Worker ID + Lease Until
         and flips 상태 -> 처리중.
         """
+        # Pending = 상태 '대기' OR 상태 미설정(빈 값). AI 처리 허용 체크박스는 더 이상
+        # 클레임 조건이 아니며, 민감 자료는 파이프라인에서 자동 제외된다(process_item).
         page = self._query_first(
             filter={
-                "and": [
+                "or": [
                     {"property": Inbox.STATUS, "select": {"equals": Inbox.ST_PENDING}},
-                    {"property": Inbox.AI_ALLOWED, "checkbox": {"equals": True}},
+                    {"property": Inbox.STATUS, "select": {"is_empty": True}},
                 ]
             },
-            sorts=[{"property": Inbox.STATUS, "direction": "ascending"}],
+            sorts=[{"timestamp": "created_time", "direction": "ascending"}],
         )
         if page is None:
             page = self._query_first(
                 filter={
                     "and": [
                         {"property": Inbox.STATUS, "select": {"equals": Inbox.ST_PROCESSING}},
-                        {"property": Inbox.AI_ALLOWED, "checkbox": {"equals": True}},
                         {"property": Inbox.LEASE_UNTIL, "date": {"on_or_before": _iso(_now())}},
                     ]
                 },
@@ -488,10 +489,11 @@ class NotionStore:
         access: str | None = None,
         topics: list[str] | None = None,
         ai_allowed: bool = True,
+        status: str | None = None,
     ) -> dict:
         props: dict = {
             Inbox.TITLE: _title(title),
-            Inbox.STATUS: _select(Inbox.ST_PENDING),
+            Inbox.STATUS: _select(status or Inbox.ST_PENDING),
             Inbox.AI_ALLOWED: {"checkbox": ai_allowed},
             Inbox.RETRIES: {"number": 0},
         }

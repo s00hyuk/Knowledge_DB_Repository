@@ -13,9 +13,11 @@ Notion **Knowledge Inbox**를 중앙 허브로 삼아 큐를 소비합니다.
 
 ## 동작 개요
 
-1. **입력** — Notion `Knowledge Inbox`에 자료를 등록(웹 URL / PDF / 텍스트). `ingest` CLI로도 등록 가능.
-2. **큐잉 & 리스** — 워커가 `상태=대기` + `AI 처리 허용` 항목을 하나씩 집어
+1. **입력** — Notion `Knowledge Inbox`에 자료를 등록(웹 URL / PDF / 텍스트 / 이미지).
+   Notion에서 행만 추가하면 되고(상태를 비워둬도 됨), `ingest` CLI로도 등록 가능.
+2. **큐잉 & 리스** — 워커가 `상태=대기`이거나 **상태가 비어 있는** 항목을 하나씩 집어
    `Worker ID`/`Lease Until`을 찍고 `처리중`으로 전환. 크래시 시 만료된 리스를 재확보.
+   AI 처리는 기본 허용이며, `접근 등급=민감`만 자동 제외합니다.
 3. **extract** — `원문 URL`(웹/PDF/이미지), `원본 파일`, 또는 인라인 텍스트에서 본문·해시 추출.
 4. **classify** — OpenAI **Structured Outputs**(strict json_schema)로 요약·도메인·개념·엔터티·주장을 구조화.
    **이미지 자료는 비전 모델로 OCR+분류를 한 번에** 수행합니다.
@@ -92,6 +94,13 @@ knowledge-db ingest ./secret.pdf --access 민감              # AI 처리 자동
 knowledge-db ingest https://… --type 논문 --title "제목 지정"
 knowledge-db ingest https://… --no-ai                       # 보관만
 ```
+
+> **Notion에서 직접 추가하는 게 기본 워크플로입니다.** Knowledge Inbox에 행을 추가하고
+> URL/파일/텍스트만 넣으면(상태는 비워둬도 `대기`로 간주) `knowledge-db run` 워커가
+> 자동으로 처리합니다. 모바일 공유·웹 클리퍼로 넣어도 동일하게 동작합니다.
+> `AI 처리 허용` 체크는 필요 없으며, `접근 등급=민감`인 자료만 AI 처리에서 제외됩니다.
+> CLI `ingest`는 터미널에서 빠르게 넣고 싶을 때 쓰는 보조 수단입니다.
+> `--no-ai`로 넣은 항목은 자동 처리되지 않도록 `검토` 상태로 보관됩니다.
 
 편의 기능:
 - **자동 감지**: `--url/--file/--text`를 몰라도 원본만 넘기면 됨(명시 플래그도 계속 지원).

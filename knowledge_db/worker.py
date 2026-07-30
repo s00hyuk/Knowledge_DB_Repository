@@ -136,6 +136,9 @@ def cmd_ingest(args: argparse.Namespace) -> int:
             else:
                 title = value[:80]
 
+        # AI 처리 허용이 이제 기본값이므로, "보관만"(--no-ai)은 상태를 검토로 두어
+        # 워커가 자동으로 집지 않게 한다(빈/대기 상태만 클레임 대상).
+        status = None if ai_allowed else Inbox.ST_REVIEW
         created = store.create_inbox_item(
             title=title,
             source_url=value if kind == "url" else None,
@@ -145,6 +148,7 @@ def cmd_ingest(args: argparse.Namespace) -> int:
             access=access,
             topics=args.topic,
             ai_allowed=ai_allowed,
+            status=status,
         )
         log.info("Queued [%s] %s -> %s", kind, title[:60], created.get("url") or created["id"])
 
